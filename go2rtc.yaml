@@ -1,0 +1,16 @@
+api:
+  listen: ":1984"
+
+log:
+  level: "info"
+  format: "color"
+  output: "stdout"
+
+rtsp:
+  listen: ":8554"
+
+streams:
+
+webrtc:
+  listen: ":8555"
+preload:

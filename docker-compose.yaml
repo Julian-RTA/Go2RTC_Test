@@ -1,0 +1,27 @@
+services:
+  go2rtc:
+    image: alexxit/go2rtc:latest
+    container_name: go2rtc
+    restart: unless-stopped
+    ports:
+      - "1984:1984" # API / Web UI / WebRTC signaling
+      - "8554:8554" # RTSP rebroadcast
+      - "8555:8555/tcp" # WebRTC media
+      - "8555:8555/udp"
+    volumes:
+      - ./go2rtc.yaml:/config/go2rtc.yaml
+
+  stream-recorder:
+    build: .
+    container_name: stream-recorder
+    restart: unless-stopped
+    environment:
+      - GO2RTC_API=http://go2rtc:1984
+      - GO2RTC_RTSP=rtsp://go2rtc:8554
+    ports:
+      - "8000:8000" # Serves the API and /clips static files
+    volumes:
+      - ./data/recordings:/data/recordings
+      - ./data/clips:/data/clips
+    depends_on:
+      - go2rtc
