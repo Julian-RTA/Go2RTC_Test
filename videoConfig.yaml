@@ -1,0 +1,4 @@
+videoCodec: "libx264"
+containerFormat: "mp4"
+clipDurationSeconds: 60
+audioCodec: "libopus"

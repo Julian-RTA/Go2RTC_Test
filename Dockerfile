@@ -11,6 +11,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY ffmpeg_management_server.py .
+COPY videoConfig.yaml .
 
 EXPOSE 8000
 
