@@ -10,6 +10,11 @@ import yaml
 from pathlib import Path
 import threading
 from pydantic import BaseModel
+#currently this breaks the server. fix tomorrow
+#from fastapi_timeout import timeout, TimeoutMiddleware
+#import time
+#app.add_middleware(TimeoutMiddleware, timeout_seconds=5.0)
+
 
 GO2RTC_API = os.getenv("GO2RTC_API", "http://go2rtc:1984")
 GO2RTC_RTSP = os.getenv("GO2RTC_RTSP", "rtsp://go2rtc:8554")
@@ -127,8 +132,10 @@ async def startup_event():
     reload_config()
     asyncio.create_task(stream_reconciler_loop())
 
-@app.post("/api/clip")
-def extract_clip(camera: str, start_iso: str, end_iso: str):
+
+#@timeout(300.0)
+#@app.post("/api/clip")
+def _extract_clip_sync(camera: str, start_iso: str, end_iso: str):
     """
     Slices raw 60s segments into a single alarm event clip.
     start_iso / end_iso format: '2026-09-30T15:30:00Z'
@@ -151,6 +158,7 @@ def extract_clip(camera: str, start_iso: str, end_iso: str):
             # Include files within a 60s tolerance window
             if file_time <= end_dt and (file_time.timestamp() + config_data["clipDurationSeconds"]) >= start_dt.timestamp():
                 matched_files.append(f)
+                single_file_time = file_time
         except ValueError:
             continue
 
@@ -164,8 +172,8 @@ def extract_clip(camera: str, start_iso: str, end_iso: str):
     if len(matched_files) == 1:
         subprocess.run([
             "ffmpeg", "-y", "-i", matched_files[0],
-            "-ss", str(max(0, int((start_dt - file_time).total_seconds()))),
-            "-to", str(int((end_dt - file_time).total_seconds())),
+            "-ss", str(max(0, int((start_dt - single_file_time).total_seconds()))),
+            "-to", str(int((end_dt - single_file_time).total_seconds())),
             "-c:v", config_data["videoCodec"], 
             "-c:a", config_data["audioCodec"],
             output_path
@@ -184,3 +192,18 @@ def extract_clip(camera: str, start_iso: str, end_iso: str):
         ], check=True)
 
     return {"url": f"/clips/{clip_id}", "filename": clip_id}
+
+
+
+@app.post("/api/clip")
+async def extract_clip(camera: str, start_iso: str, end_iso: str):
+    """
+    Slices raw segments into a single alarm event clip with a 5-minute timeout.
+    """
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_extract_clip_sync, camera, start_iso, end_iso),
+            timeout=300.0
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Clip extraction timed out after 5 minutes.")

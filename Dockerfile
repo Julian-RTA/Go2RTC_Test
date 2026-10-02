@@ -15,4 +15,4 @@ COPY videoConfig.yaml .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "ffmpeg_management_server:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "ffmpeg_management_server:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "300"]
