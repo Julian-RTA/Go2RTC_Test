@@ -10,10 +10,6 @@ import yaml
 from pathlib import Path
 import threading
 from pydantic import BaseModel
-#currently this breaks the server. fix tomorrow
-#from fastapi_timeout import timeout, TimeoutMiddleware
-#import time
-#app.add_middleware(TimeoutMiddleware, timeout_seconds=5.0)
 
 
 GO2RTC_API = os.getenv("GO2RTC_API", "http://go2rtc:1984")
@@ -133,8 +129,6 @@ async def startup_event():
     asyncio.create_task(stream_reconciler_loop())
 
 
-#@timeout(300.0)
-#@app.post("/api/clip")
 def _extract_clip_sync(camera: str, start_iso: str, end_iso: str):
     """
     Slices raw 60s segments into a single alarm event clip.
