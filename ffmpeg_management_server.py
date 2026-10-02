@@ -67,12 +67,12 @@ def get_config():
 
 
 @app.put("/config")
-def update_config(update: ConfigUpdate):
+def update_config(key: str, value: str):
     """Update a config key and persist it."""
     with CONFIG_LOCK:
-        config_data[update.key] = update.value
+        config_data[key] = value
         save_config(config_data)
-    return {"message": f"Config '{update.key}' updated successfully."}
+    return {"message": f"Config '{key}' updated successfully."}
 
 
 @app.post("/config/reload")
