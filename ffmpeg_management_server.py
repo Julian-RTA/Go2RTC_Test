@@ -10,7 +10,7 @@ import yaml
 from pathlib import Path
 import threading
 from pydantic import BaseModel
-
+import time
 
 GO2RTC_API = os.getenv("GO2RTC_API", "http://go2rtc:1984")
 GO2RTC_RTSP = os.getenv("GO2RTC_RTSP", "rtsp://go2rtc:8554")
@@ -145,6 +145,13 @@ def _extract_clip_sync(camera: str, start_iso: str, end_iso: str):
     all_files = sorted(glob.glob(f"{stream_dir}/*.{config_data['containerFormat']}"))
     matched_files = []
     
+    clip_id = f"{camera}_{int(start_dt.timestamp())}_{int(end_dt.timestamp())}.{config_data['containerFormat']}"
+    output_path = os.path.join(CLIPS_DIR, clip_id)
+    #allows for more freedom of deleting temp recordings/"cache hit" speed increase
+    if os.path.isfile(output_path):
+        return {"url": f"/clips/{clip_id}", "filename": clip_id}
+
+
     for f in all_files:
         base = os.path.splitext(os.path.basename(f))[0]
         try:
@@ -159,8 +166,7 @@ def _extract_clip_sync(camera: str, start_iso: str, end_iso: str):
     if not matched_files:
         raise HTTPException(status_code=404, detail="No footage found for requested time window")
 
-    clip_id = f"{camera}_{int(start_dt.timestamp())}_{int(end_dt.timestamp())}.{config_data['containerFormat']}"
-    output_path = os.path.join(CLIPS_DIR, clip_id)
+    
 
     # Lossless single-file slice or multi-file stitch
     if len(matched_files) == 1:
@@ -207,10 +213,27 @@ async def extract_clip(camera: str, start_iso: str, end_iso: str):
 @app.delete("/api/deleteRecordings")
 def delete_recordings(ageInMinutes: int):
     """Delete old recordings in the data/recordings/(camera name) folders."""
-    cutoff_time = time.time() - (minutes * 60) 
+    cutoff_time = time.time() - (ageInMinutes * 60) 
     recordingsFolder = RECORDINGS_DIR
+    counter = 0
     for subdirectory in os.scandir(recordingsFolder):
         for filename in os.listdir(subdirectory):
             file_path = os.path.join(subdirectory, filename)
             if os.path.isfile(file_path) and os.path.getmtime(file_path) < cutoff_time:
                 os.remove(file_path)
+                counter = counter + 1
+    return {"message": f"Deleted {counter} items", "counter":counter}
+
+
+@app.delete("/api/deleteClips")
+def delete_recordings(ageInMinutes: int):
+    """Delete old clips in the data/clips folders."""
+    cutoff_time = time.time() - (ageInMinutes * 60) 
+    clipsFolder = CLIPS_DIR
+    counter = 0
+    for filename in os.listdir(clipsFolder):
+        file_path = os.path.join(clipsFolder, filename)
+        if os.path.isfile(file_path) and os.path.getmtime(file_path) < cutoff_time:
+            os.remove(file_path)
+            counter = counter + 1
+    return {"message": f"Deleted {counter} clips", "counter":counter}
