@@ -201,3 +201,16 @@ async def extract_clip(camera: str, start_iso: str, end_iso: str):
         )
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Clip extraction timed out after 5 minutes.")
+
+
+
+@app.delete("/api/deleteRecordings")
+def delete_recordings(ageInMinutes: int):
+    """Delete old recordings in the data/recordings/(camera name) folders."""
+    cutoff_time = time.time() - (minutes * 60) 
+    recordingsFolder = RECORDINGS_DIR
+    for subdirectory in os.scandir(recordingsFolder):
+        for filename in os.listdir(subdirectory):
+            file_path = os.path.join(subdirectory, filename)
+            if os.path.isfile(file_path) and os.path.getmtime(file_path) < cutoff_time:
+                os.remove(file_path)
