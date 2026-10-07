@@ -18,6 +18,8 @@ services:
     environment:
       - GO2RTC_API=http://go2rtc:1984
       - GO2RTC_RTSP=rtsp://go2rtc:8554
+      # - NVIDIA_VISIBLE_DEVICES=all
+      # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
     ports:
       - "8000:8000" # Serves the API and /clips static files
     volumes:
@@ -25,3 +27,11 @@ services:
       - ./data/clips:/data/clips
     depends_on:
       - go2rtc
+    
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu, video] 

@@ -66,7 +66,10 @@ def get_config():
 def update_config(key: str, value: str):
     """Update a config key and persist it."""
     with CONFIG_LOCK:
-        config_data[key] = value
+        if key == "clipDurationSeconds":
+            config_data[key] = int(value)
+        else:
+            config_data[key] = value
         save_config(config_data)
     return {"message": f"Config '{key}' updated successfully."}
 
@@ -85,14 +88,19 @@ def start_ffmpeg_worker(stream_name: str):
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-rtsp_transport", "tcp",
+        # "-hwaccel", "cuda",
         "-i", f"{GO2RTC_RTSP}/{stream_name}",
-        "-c", "copy",
+        "-c", "copy", 
+        # fixes the metadata issue, however the -c copy option makes it unplayable
+        # if we can guarantee this runs on a powerful cpu or get gpu encoding, we can
+        # switch this to the options of the clip recorder to save storage and have the clips use -c copy for speed 
+        "-movflags", "empty_moov+omit_tfhd_offset+frag_keyframe", 
         "-f", "segment",
         "-segment_time", str(config_data["clipDurationSeconds"]),
         "-segment_format", config_data["containerFormat"],
+        "-segment_wrap" , "3",
         "-reset_timestamps", "1",
-        "-strftime", "1",
-        f"{stream_dir}/%Y%m%d_%H%M%S.{config_data['containerFormat']}"
+        f"{stream_dir}/temp_vid%d.{config_data['containerFormat']}"
     ]
     return subprocess.Popen(cmd)
 
@@ -153,9 +161,10 @@ def _extract_clip_sync(camera: str, start_iso: str, end_iso: str):
 
 
     for f in all_files:
-        base = os.path.splitext(os.path.basename(f))[0]
+        #base = os.path.splitext(os.path.basename(f))[0]
         try:
-            file_time = datetime.strptime(base, "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
+            unix_time = os.path.getmtime(f)
+            file_time = datetime.fromtimestamp(unix_time).replace(tzinfo=timezone.utc)
             # Include files within a 60s tolerance window
             if file_time <= end_dt and (file_time.timestamp() + config_data["clipDurationSeconds"]) >= start_dt.timestamp():
                 matched_files.append(f)
@@ -175,6 +184,8 @@ def _extract_clip_sync(camera: str, start_iso: str, end_iso: str):
             "-ss", str(max(0, int((start_dt - single_file_time).total_seconds()))),
             "-to", str(int((end_dt - single_file_time).total_seconds())),
             "-c:v", config_data["videoCodec"], 
+            "-crf", "35",
+            "-preset", "slow",
             "-c:a", config_data["audioCodec"],
             output_path
         ], check=True)
@@ -187,13 +198,26 @@ def _extract_clip_sync(camera: str, start_iso: str, end_iso: str):
         subprocess.run([
             "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_file,
             "-c:v", config_data["videoCodec"], 
+            "-crf", "35",
+            "-preset", "slow",
             "-c:a", config_data["audioCodec"],
             output_path
         ], check=True)
 
     return {"url": f"/clips/{clip_id}", "filename": clip_id}
 
-
+@app.get("/api/storage")
+def getStorageUsage():
+    """
+    Returns storage usage of the clips folder. Recordings folder is temporary, so less important, but still important
+    """
+    clipsFolder = CLIPS_DIR
+    counter = 0
+    for filename in os.listdir(clipsFolder):
+        file_path = os.path.join(clipsFolder, filename)
+        counter = counter + os.path.getsize(file_path)
+    
+    return {"bytes": counter}
 
 @app.post("/api/clip")
 async def extract_clip(camera: str, start_iso: str, end_iso: str):
@@ -217,6 +241,9 @@ def delete_recordings(ageInMinutes: int):
     recordingsFolder = RECORDINGS_DIR
     counter = 0
     for subdirectory in os.scandir(recordingsFolder):
+        #for saving a demo folder
+        if subdirectory.is_dir() and subdirectory.name == "DEMO_CAMERA_ONLY":
+            continue
         for filename in os.listdir(subdirectory):
             file_path = os.path.join(subdirectory, filename)
             if os.path.isfile(file_path) and os.path.getmtime(file_path) < cutoff_time:
@@ -232,6 +259,8 @@ def delete_recordings(ageInMinutes: int):
     clipsFolder = CLIPS_DIR
     counter = 0
     for filename in os.listdir(clipsFolder):
+        if filename.startswith("DEMO_CAMERA_ONLY"):
+            continue
         file_path = os.path.join(clipsFolder, filename)
         if os.path.isfile(file_path) and os.path.getmtime(file_path) < cutoff_time:
             os.remove(file_path)
