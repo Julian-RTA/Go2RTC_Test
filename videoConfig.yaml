@@ -1,4 +1,6 @@
-videoCodec: "libx264"
+videoCodec: "h264_nvenc"
 containerFormat: "mp4"
 clipDurationSeconds: 60
 audioCodec: "libopus"
+minimumTimeBeforeAlarm: 15
+maximumAmountOfBufferClips: 3

@@ -2,7 +2,7 @@ import os
 import glob
 import asyncio
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
@@ -66,9 +66,11 @@ def get_config():
 def update_config(key: str, value: str):
     """Update a config key and persist it."""
     with CONFIG_LOCK:
-        if key == "clipDurationSeconds":
+        #probably not ideal but google said it was the most reliable
+        #converts int values to ints, leaves strings as strings
+        try:
             config_data[key] = int(value)
-        else:
+        except ValueError:
             config_data[key] = value
         save_config(config_data)
     return {"message": f"Config '{key}' updated successfully."}
@@ -88,9 +90,14 @@ def start_ffmpeg_worker(stream_name: str):
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-rtsp_transport", "tcp",
-        # "-hwaccel", "cuda",
+        "-hwaccel", "cuda",
         "-i", f"{GO2RTC_RTSP}/{stream_name}",
-        "-c", "copy", 
+        # "-c", "copy", 
+        "-vf", "fps=20",
+        "-c:v", config_data["videoCodec"], 
+        "-crf", "35",
+        "-preset", "fast",
+        "-c:a", config_data["audioCodec"],
         # fixes the metadata issue, however the -c copy option makes it unplayable
         # if we can guarantee this runs on a powerful cpu or get gpu encoding, we can
         # switch this to the options of the clip recorder to save storage and have the clips use -c copy for speed 
@@ -98,7 +105,7 @@ def start_ffmpeg_worker(stream_name: str):
         "-f", "segment",
         "-segment_time", str(config_data["clipDurationSeconds"]),
         "-segment_format", config_data["containerFormat"],
-        "-segment_wrap" , "3",
+        "-segment_wrap", str(config_data["maximumAmountOfBufferClips"]),
         "-reset_timestamps", "1",
         f"{stream_dir}/temp_vid%d.{config_data['containerFormat']}"
     ]
@@ -109,8 +116,8 @@ def start_ffmpeg_worker(stream_name: str):
 async def stream_reconciler_loop():
     """Background task: detects new streams in go2rtc and manages FFMPEG workers."""
     while True:
-        reload_config()
         try:
+            reload_config()
             async with httpx.AsyncClient() as client:
                 res = await client.get(f"{GO2RTC_API}/api/streams", timeout=3.0)
                 if res.status_code == 200:
@@ -145,6 +152,10 @@ def _extract_clip_sync(camera: str, start_iso: str, end_iso: str):
     start_dt = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
     end_dt = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
     
+    start_dt = start_dt - timedelta(seconds=config_data["minimumTimeBeforeAlarm"])
+    end_dt = end_dt - timedelta(seconds=config_data["minimumTimeBeforeAlarm"])
+
+
     stream_dir = os.path.join(RECORDINGS_DIR, camera)
     if not os.path.exists(stream_dir):
         raise HTTPException(status_code=404, detail="Camera recordings directory not found")
@@ -177,16 +188,21 @@ def _extract_clip_sync(camera: str, start_iso: str, end_iso: str):
 
     
 
-    # Lossless single-file slice or multi-file stitch
+    
     if len(matched_files) == 1:
         subprocess.run([
-            "ffmpeg", "-y", "-i", matched_files[0],
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-hwaccel", "cuda",
+            "-i", matched_files[0],
             "-ss", str(max(0, int((start_dt - single_file_time).total_seconds()))),
             "-to", str(int((end_dt - single_file_time).total_seconds())),
+            # "-c", "copy", 
             "-c:v", config_data["videoCodec"], 
-            "-crf", "35",
+            "-crf", "38",
+            #supposed to decrease file size, doesnt seem to work for h265
             "-preset", "slow",
-            "-c:a", config_data["audioCodec"],
+            # "-c:a", config_data["audioCodec"],
+            "-c:a", "copy",
             output_path
         ], check=True)
     else:
@@ -196,11 +212,15 @@ def _extract_clip_sync(camera: str, start_iso: str, end_iso: str):
             for mf in matched_files:
                 lf.write(f"file '{mf}'\n")
         subprocess.run([
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_file,
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-loglevel", "error",
+            "-hwaccel", "cuda",
+            "-i", list_file,
+            # "-c", "copy", 
             "-c:v", config_data["videoCodec"], 
-            "-crf", "35",
+            "-crf", "38",
             "-preset", "slow",
-            "-c:a", config_data["audioCodec"],
+            # "-c:a", config_data["audioCodec"],
+            "-c:a", "copy",
             output_path
         ], check=True)
 
@@ -217,6 +237,16 @@ def getStorageUsage():
         file_path = os.path.join(clipsFolder, filename)
         counter = counter + os.path.getsize(file_path)
     
+    recordingsFolder = RECORDINGS_DIR
+    for subdirectory in os.scandir(recordingsFolder):
+        #for saving a demo folder
+        if subdirectory.is_dir() and subdirectory.name == "DEMO_CAMERA_ONLY":
+            continue
+        for filename in os.listdir(subdirectory):
+            file_path = os.path.join(subdirectory, filename)
+            if os.path.isfile(file_path):
+                counter = counter + os.path.getsize(file_path)
+
     return {"bytes": counter}
 
 @app.post("/api/clip")

@@ -10,6 +10,8 @@ rtsp:
   listen: ":8554"
 
 streams:
+  New_Tablet:
+    - http://10.10.0.54:15000/video
 
 webrtc:
   listen: ":8555"
