@@ -67,11 +67,14 @@ def update_config(key: str, value: str):
     """Update a config key and persist it."""
     with CONFIG_LOCK:
         #probably not ideal but google said it was the most reliable
-        #converts int values to ints, leaves strings as strings
-        try:
-            config_data[key] = int(value)
-        except ValueError:
-            config_data[key] = value
+        #converts int values to ints, leaves strings as strings, and my one bool to bool
+        if key == "reEncodeStream":
+            config_data[key] = value.strip().lower() == "true" 
+        else:
+            try:
+                config_data[key] = int(value)
+            except ValueError:
+                config_data[key] = value
         save_config(config_data)
     return {"message": f"Config '{key}' updated successfully."}
 
@@ -86,29 +89,44 @@ def manual_reload():
 def start_ffmpeg_worker(stream_name: str):
     stream_dir = os.path.join(RECORDINGS_DIR, stream_name)
     os.makedirs(stream_dir, exist_ok=True)
-    
-    cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-rtsp_transport", "tcp",
-        "-hwaccel", "cuda",
-        "-i", f"{GO2RTC_RTSP}/{stream_name}",
-        # "-c", "copy", 
-        "-vf", "fps=20",
-        "-c:v", config_data["videoCodec"], 
-        "-crf", "35",
-        "-preset", "fast",
-        "-c:a", config_data["audioCodec"],
-        # fixes the metadata issue, however the -c copy option makes it unplayable
-        # if we can guarantee this runs on a powerful cpu or get gpu encoding, we can
-        # switch this to the options of the clip recorder to save storage and have the clips use -c copy for speed 
-        "-movflags", "empty_moov+omit_tfhd_offset+frag_keyframe", 
-        "-f", "segment",
-        "-segment_time", str(config_data["clipDurationSeconds"]),
-        "-segment_format", config_data["containerFormat"],
-        "-segment_wrap", str(config_data["maximumAmountOfBufferClips"]),
-        "-reset_timestamps", "1",
-        f"{stream_dir}/temp_vid%d.{config_data['containerFormat']}"
-    ]
+    if config_data["reEncodeStream"] == True:
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-rtsp_transport", "tcp",
+            "-hwaccel", "cuda",
+            "-i", f"{GO2RTC_RTSP}/{stream_name}",
+            # "-c", "copy", 
+            "-vf", "fps=20",
+            "-c:v", config_data["videoCodec"], 
+            "-crf", "35",
+            "-preset", "fast",
+            "-c:a", config_data["audioCodec"],
+            # fixes the metadata issue, however the -c copy option makes it unplayable
+            # if we can guarantee this runs on a powerful cpu or get gpu encoding, we can
+            # switch this to the options of the clip recorder to save storage and have the clips use -c copy for speed 
+            "-movflags", "empty_moov+omit_tfhd_offset+frag_keyframe", 
+            "-f", "segment",
+            "-segment_time", str(config_data["clipDurationSeconds"]),
+            "-segment_format", config_data["containerFormat"],
+            "-segment_wrap", str(config_data["maximumAmountOfBufferClips"]),
+            "-reset_timestamps", "1",
+            f"{stream_dir}/temp_vid%d.{config_data['containerFormat']}"
+        ]
+    else:
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-rtsp_transport", "tcp",
+            "-hwaccel", "cuda",
+            "-i", f"{GO2RTC_RTSP}/{stream_name}",
+            "-c", "copy", 
+            "-movflags", "empty_moov+omit_tfhd_offset+frag_keyframe", 
+            "-f", "segment",
+            "-segment_time", str(config_data["clipDurationSeconds"]),
+            "-segment_format", config_data["containerFormat"],
+            "-segment_wrap", str(config_data["maximumAmountOfBufferClips"]),
+            "-reset_timestamps", "1",
+            f"{stream_dir}/temp_vid%d.{config_data['containerFormat']}"
+        ]
     return subprocess.Popen(cmd)
 
 
@@ -152,16 +170,17 @@ def _extract_clip_sync(camera: str, start_iso: str, end_iso: str):
     start_dt = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
     end_dt = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
     
+    #shift times for alarm offset
     start_dt = start_dt - timedelta(seconds=config_data["minimumTimeBeforeAlarm"])
     end_dt = end_dt - timedelta(seconds=config_data["minimumTimeBeforeAlarm"])
-
 
     stream_dir = os.path.join(RECORDINGS_DIR, camera)
     if not os.path.exists(stream_dir):
         raise HTTPException(status_code=404, detail="Camera recordings directory not found")
 
     # Locate relevant segment files by timestamp naming
-    all_files = sorted(glob.glob(f"{stream_dir}/*.{config_data['containerFormat']}"))
+    all_files = glob.glob(f"{stream_dir}/*.{config_data['containerFormat']}")
+    all_files.sort(key=os.path.getmtime)
     matched_files = []
     
     clip_id = f"{camera}_{int(start_dt.timestamp())}_{int(end_dt.timestamp())}.{config_data['containerFormat']}"
@@ -176,8 +195,13 @@ def _extract_clip_sync(camera: str, start_iso: str, end_iso: str):
         try:
             unix_time = os.path.getmtime(f)
             file_time = datetime.fromtimestamp(unix_time).replace(tzinfo=timezone.utc)
+            #due to clip's modified date being the END of the video instead of the start, adjustment to fix issue
+            file_time = file_time - timedelta(seconds=get_video_duration(f))
             # Include files within a 60s tolerance window
+            # print(f"file name: {f}")
+            # print(f"filetime: {file_time}\nfile_time.timestamp(): {file_time.timestamp()}\nstart_dt.timestamp(): {start_dt.timestamp()}\nend_dt: {end_dt}")
             if file_time <= end_dt and (file_time.timestamp() + config_data["clipDurationSeconds"]) >= start_dt.timestamp():
+                # print("was chosen\n")
                 matched_files.append(f)
                 single_file_time = file_time
         except ValueError:
@@ -197,6 +221,7 @@ def _extract_clip_sync(camera: str, start_iso: str, end_iso: str):
             "-ss", str(max(0, int((start_dt - single_file_time).total_seconds()))),
             "-to", str(int((end_dt - single_file_time).total_seconds())),
             # "-c", "copy", 
+            "-movflags", "empty_moov+omit_tfhd_offset+frag_keyframe", 
             "-c:v", config_data["videoCodec"], 
             "-crf", "38",
             #supposed to decrease file size, doesnt seem to work for h265
@@ -209,13 +234,21 @@ def _extract_clip_sync(camera: str, start_iso: str, end_iso: str):
         # Multi-segment concat
         list_file = f"/tmp/{clip_id}.txt"
         with open(list_file, "w") as lf:
-            for mf in matched_files:
+            for index, mf in enumerate(matched_files):
                 lf.write(f"file '{mf}'\n")
+                #starts video on offset
+                if index == 0:
+                    unix_time = os.path.getmtime(f)
+                    file_time = datetime.fromtimestamp(unix_time).replace(tzinfo=timezone.utc)
+                    inpoint = max(0, int((start_dt - file_time).total_seconds()))
+                    lf.write(f"inpoint {inpoint}\n")
         subprocess.run([
             "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-loglevel", "error",
             "-hwaccel", "cuda",
             "-i", list_file,
             # "-c", "copy", 
+            "-t", str(config_data["clipDurationSeconds"]),
+            "-movflags", "empty_moov+omit_tfhd_offset+frag_keyframe", 
             "-c:v", config_data["videoCodec"], 
             "-crf", "38",
             "-preset", "slow",
@@ -223,7 +256,7 @@ def _extract_clip_sync(camera: str, start_iso: str, end_iso: str):
             "-c:a", "copy",
             output_path
         ], check=True)
-
+        os.remove(list_file)
     return {"url": f"/clips/{clip_id}", "filename": clip_id}
 
 @app.get("/api/storage")
@@ -296,3 +329,16 @@ def delete_recordings(ageInMinutes: int):
             os.remove(file_path)
             counter = counter + 1
     return {"message": f"Deleted {counter} clips", "counter":counter}
+
+
+def get_video_duration(file_path):
+    try:
+        cmd = [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", file_path
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        return float(result.stdout)
+    except Exception as e:
+        print("Could not read video duration, assuming clip duration")
+        return config_data["clipDurationSeconds"]

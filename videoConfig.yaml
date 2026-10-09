@@ -4,3 +4,4 @@ clipDurationSeconds: 60
 audioCodec: "libopus"
 minimumTimeBeforeAlarm: 15
 maximumAmountOfBufferClips: 3
+reEncodeStream: True
